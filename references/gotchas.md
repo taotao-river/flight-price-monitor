@@ -15,9 +15,8 @@ exists. Two separate mechanisms:
   has a bag. Measured: list showed HK$3,451 + badge; the `Select Fare` panel showed
   `1 × 23 kg (departure), None (return)`, and the cheapest both-legs fare was HK$3,800.
 
-The `Select Fare` panel (`.is-fareok-card`) is ground truth. Accept only
-`Checked baggage: Included`, or an explicit per-direction line where neither side is
-`None`. `View details` is unexpanded and must be treated as unknown, i.e. rejected.
+The `Select Fare` panel (`.is-fareok-card`) is ground truth — see the wording note below
+for how to read its baggage line.
 
 **Baggage wording in the fare panel has many forms.** Observed: `Included`, `20 kg`,
 `From 15 kg`, `1 × 23 kg (departure), 1 × 20 kg (return)`, `1 × 23 kg (departure),
