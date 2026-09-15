@@ -1,5 +1,9 @@
 """香港 <-> 首尔 来回低价机票监控。
 
+Copyright (c) 2026 taotao-river
+本程序依 GNU AGPL-3.0 授权发布，随附的 LICENSE 文件为完整条款。
+本程序不附带任何担保。
+
 两个数据源：Trip.com 和 Google Flights。两边都按出发/抵达时间窗、当天抵达、
 排除台湾转机过滤。
 

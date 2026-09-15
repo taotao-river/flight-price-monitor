@@ -88,4 +88,8 @@ silently — wrong numbers rather than exceptions. Read it before changing the s
 
 ## License
 
-MIT
+[AGPL-3.0](LICENSE). You may use, modify and redistribute this, including running it as
+a network service — but anything you build on it must be released under the same licence,
+source included. It cannot be folded into a closed-source product.
+
+Copyright (c) 2026 taotao-river
