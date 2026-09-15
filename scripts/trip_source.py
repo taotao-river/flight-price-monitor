@@ -339,7 +339,15 @@ async def check_combo(page, out_date, ret_date, log=print):
 
             verified, why = None, ""
             try:
-                await (await rel.query_selector("button") or rel).click(timeout=8000)
+                target = await rel.query_selector("button") or rel
+                # _load_all 滚回顶部后目标卡片常在视口外，直接 click 会卡在
+                # "waiting for element to be visible" 然后超时。先滚到可见。
+                try:
+                    await target.scroll_into_view_if_needed(timeout=6000)
+                    await page.wait_for_timeout(800)
+                except Exception:
+                    pass
+                await target.click(timeout=15000)
                 await page.wait_for_timeout(9000)
                 verified, why = await verify_fare(page, log)
                 await page.keyboard.press("Escape")
