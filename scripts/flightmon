@@ -1,0 +1,47 @@
+#!/bin/bash
+# 机票监控控制脚本。用法: flightmon {start|stop|off|status|log|now}
+set -u
+DIR="$(cd "$(dirname "$(readlink "$0" || echo "$0")")" && pwd)"
+LABEL="com.$(id -un).flightmonitor"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+case "${1:-status}" in
+  start)
+    launchctl load "$PLIST" 2>/dev/null
+    echo "已启动。"
+    ;;
+  stop)
+    launchctl unload "$PLIST" 2>/dev/null
+    pkill -f "$DIR/monitor.py" 2>/dev/null
+    echo "已停止。恢复: flightmon start"
+    ;;
+  off)
+    launchctl unload "$PLIST" 2>/dev/null
+    pkill -f "$DIR/monitor.py" 2>/dev/null
+    rm -f "$PLIST"
+    echo "已彻底关闭并移除开机自启。恢复需重跑 setup.sh。"
+    ;;
+  status)
+    if launchctl list | grep -q "$LABEL"; then
+      pid=$(launchctl list | grep "$LABEL" | awk '{print $1}')
+      [ "$pid" = "-" ] && echo "● 运行中（空闲，等下一轮）" \
+                       || echo "● 运行中（正在抓取，PID $pid）"
+    else
+      echo "○ 已停止"
+    fi
+    echo
+    tail -n 8 "$DIR/monitor.log" 2>/dev/null | sed 's/^/  /'
+    ;;
+  log)
+    tail -f "$DIR/monitor.log"
+    ;;
+  now)
+    echo "立即跑一轮..."
+    "$DIR/.venv/bin/python" "$DIR/monitor.py"
+    ;;
+  *)
+    echo "用法: flightmon {start|stop|off|status|log|now}"
+    echo "  start 启动    stop 暂停     off  彻底关闭"
+    echo "  status 状态   log 实时日志  now  立刻跑一轮"
+    ;;
+esac
