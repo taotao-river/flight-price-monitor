@@ -19,6 +19,27 @@ The `Select Fare` panel (`.is-fareok-card`) is ground truth. Accept only
 `Checked baggage: Included`, or an explicit per-direction line where neither side is
 `None`. `View details` is unexpanded and must be treated as unknown, i.e. rejected.
 
+**Baggage wording in the fare panel has many forms.** Observed: `Included`, `20 kg`,
+`From 15 kg`, `1 × 23 kg (departure), 1 × 20 kg (return)`, `1 × 23 kg (departure),
+None (return)`, `View details`. An early parser recognised only the first and the
+explicit per-direction form, so `From 15 kg` and a bare `20 kg` were classified
+`unknown` and **silently discarded** — entire itineraries were reported as
+"could not verify" when the panel had opened and shown perfectly good fares. Check for
+`None` first (a per-direction string contains both `kg` and `None`), then `Included`,
+then any `\d+\s*kg`.
+
+**Distinguish the failure modes when verification returns nothing.** "The panel never
+opened", "the panel opened but had no fare cards", and "the panel opened and no fare met
+the baggage requirement" are completely different situations — the last is not a failure
+at all. Collapsing them into a bare `except: pass` and a `return None` makes the cause
+undiagnosable after the fact. Return a reason string and log it.
+
+**Judge list truncation by the number of *qualifying* flights, not the total.** Sorting
+by cheapest puts red-eyes and excluded-layover itineraries first, so a truncated list is
+disproportionately full of unusable flights. A pass that scraped 19 flights looked
+healthy by total count but yielded only 2 usable candidates, missing the cheapest
+bookable option entirely.
+
 **Currency symbol is part of the price regex.** `CURRENCY_SYMBOL` must match what the
 page actually renders. A mismatch matches nothing and yields zero flights with no error.
 

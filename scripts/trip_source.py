@@ -106,21 +106,26 @@ CHECKED_RE = re.compile(r"Checked baggage:\s*([^\n]*)", re.I)
 def fare_bag_status(text):
     """判断某个票价档是否两程都带寄舱行李。
 
-    Trip 的措辞有三种：
+    Trip 的措辞实测有这些：
       "Included"                                → 两程都有
+      "20 kg"                                   → 两程都是 20kg
+      "From 15 kg"                              → 两程里较少的那程有 15kg，即两程都有
+      "1 × 23 kg (departure), 1 × 20 kg (return)" → 显式写明两程
       "1 × 23 kg (departure), None (return)"    → 只有一程，不合要求
-      "View details"                            → 没展开看不到，保守起见当作不合要求
+      "View details"                            → 没展开，看不到，保守起见不算
+    只认前三种会漏掉大量合格票价——曾经把 "From 15 kg" 判成 unknown 丢掉，
+    导致整个行程被误标成「无法验证」。
     """
     m = CHECKED_RE.search(text)
     if not m:
         return "unknown", ""
     detail = m.group(1).strip()
     low = detail.lower()
-    if "none" in low:
+    if "none" in low:            # 必须先判，否则 "23 kg ... None" 会被当成合格
         return "partial", detail
     if low.startswith("included"):
         return "ok", detail
-    if "kg" in low and "departure" in low and "return" in low:
+    if re.search(r"\d+\s*kg", low):
         return "ok", detail
     return "unknown", detail
 
@@ -130,30 +135,43 @@ async def verify_fare(page, log=print):
 
     列表页那个「Checked baggage included」徽章只代表某一程有行李，
     实测同一行程列表报 HK$3,451（回程无行李），面板里两程都带行李要 HK$3,800。
-    返回 (真实价, 行李说明) 或 None。
+    返回 ((真实价, 行李说明), "") 或 (None, 失败原因)。
+
+    原因必须分得清：面板没打开、和「面板打开了但没有一档两程都带行李」，
+    是完全不同的两件事——后者不是故障，是这个行程真的满足不了要求。
     """
     try:
         await page.wait_for_selector(FARE_CARD, timeout=20000)
     except Exception:
-        return None
+        return None, "下单面板没打开（点击没生效，或 .is-fareok-card 选择器已失效）"
     await page.wait_for_timeout(2000)
 
-    best = None
-    for el in await page.query_selector_all(FARE_CARD):
+    cards = await page.query_selector_all(FARE_CARD)
+    if not cards:
+        return None, "面板打开了但一个票价档都没有"
+
+    best, seen = None, []
+    for el in cards:
         try:
             text = await el.inner_text()
         except Exception:
+            seen.append("读取失败")
             continue
         m = PRICE_RE.search(text)
         if not m:
+            seen.append("无价格")
             continue
         price = int(m.group(1).replace(",", ""))
         status, detail = fare_bag_status(text)
+        seen.append(f"{money(price)}={status}({detail or '无行李字段'})")
         if status != "ok":
             continue
         if best is None or price < best[0]:
             best = (price, detail)
-    return best
+
+    if best is None:
+        return None, f"面板里 {len(cards)} 档都不是两程带行李 → {'; '.join(seen)}"
+    return best, ""
 
 
 def bag_cost(f_out, f_ret):
@@ -244,24 +262,30 @@ async def check_combo(page, out_date, ret_date, log=print):
     await _sort_cheapest(page)
     await _load_all(page)
 
-    outs = await scrape(page)
-    # 列表偶尔只返回一截（实测同一组合 11 班 vs 28 班），重载一次取较全的那份
-    if len(outs) < 15:
-        await page.goto(url, wait_until="domcontentloaded", timeout=70000)
-        await page.wait_for_timeout(15000)
-        await _sort_cheapest(page)
-        await _load_all(page)
-        again = await scrape(page)
-        if len(again) > len(outs):
-            log(f"  [Trip] {out_date} → {ret_date}: 列表被截断（{len(outs)} 班），"
-                f"重载后取到 {len(again)} 班")
-            outs = again
+    # 列表懒加载常只返回一截。判据要看**合格**航班数，不能只看总数：
+    # 「最低价」排序把便宜的红眼班和经台湾的排在前面，所以截断时留下的
+    # 往往全是不可用的——实测抓到 19 班却只有 2 班合格，真正便宜的那班在截断线外。
+    outs, cands = [], []
+    for attempt in range(3):
+        if attempt:
+            await page.goto(url, wait_until="domcontentloaded", timeout=70000)
+            await page.wait_for_timeout(15000)
+            await _sort_cheapest(page)
+            await _load_all(page)
+        got = await scrape(page)
+        ok = [(f, el) for f, el in got if acceptable(f, C.OUT_ARRIVE_WINDOW)]
+        if len(ok) > len(cands):
+            outs, cands = got, ok
+        if len(got) >= 20 and len(ok) >= 4:
+            break
+        if attempt < 2:
+            log(f"  [Trip] {out_date} → {ret_date}: 列表疑似截断"
+                f"（{len(got)} 班 / 合格 {len(ok)} 班），重载重试")
 
     if not outs:
         log(f"  [Trip] {out_date} → {ret_date}: 没抓到航班")
         return None, None
 
-    cands = [(f, el) for f, el in outs if acceptable(f, C.OUT_ARRIVE_WINDOW)]
     cands.sort(key=lambda x: x[0].price)
     log(f"  [Trip] {out_date} → {ret_date}: 去程 {len(outs)} 班，符合条件 {len(cands)} 班")
     if not cands:
@@ -313,15 +337,18 @@ async def check_combo(page, out_date, ret_date, log=print):
                 continue
             f_ret, rel = hit2
 
-            verified = None
+            verified, why = None, ""
             try:
                 await (await rel.query_selector("button") or rel).click(timeout=8000)
                 await page.wait_for_timeout(9000)
-                verified = await verify_fare(page, log)
+                verified, why = await verify_fare(page, log)
                 await page.keyboard.press("Escape")
                 await page.wait_for_timeout(3000)
-            except Exception:
-                pass
+            except Exception as e:
+                why = f"打开下单面板时出错: {type(e).__name__}: {str(e)[:120]}"
+
+            if not verified:
+                log(f"      未验证 {f_ret.label()} — {why}")
 
             if verified:
                 total, bags, detail, est = verified[0], 0, verified[1], False
