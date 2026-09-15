@@ -95,3 +95,12 @@ page actually renders. A mismatch matches nothing and yields zero flights with n
   testing and produced results that looked stable but were not.
 - launchd agents in `~/Library/LaunchAgents` reload at login, so `launchctl unload` alone
   is not a permanent stop — remove the plist.
+
+## Concurrency
+
+**launchd fires on a fixed interval regardless of whether the previous run finished.**
+A pass that runs long, or any manual run alongside the scheduled one, produces two
+processes appending to the same log — interleaved lines that make timings and phases
+unreadable, duplicate rows in the history CSV, and enough memory pressure that one
+instance gets killed mid-run. Take a non-blocking `flock` at startup and exit quietly
+if another pass holds it.

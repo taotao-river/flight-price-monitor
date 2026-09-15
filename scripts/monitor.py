@@ -9,6 +9,8 @@ Google 显示的 OTA 价点进去也常常消失。所以 Trip.com 这边会再�
 """
 import asyncio
 import csv
+import fcntl
+import os
 import re
 import subprocess
 import sys
@@ -380,6 +382,24 @@ def _show(r):
             f" | 去 {r['out'].label()} | 回 {r['ret'].label()}")
 
 
+LOCK = HERE / ".monitor.lock"
+
+
+def acquire_lock():
+    """防止多轮重叠。launchd 到点就无条件起一轮，上一轮没跑完就会撞上：
+    两个进程往同一个日志里交错写、history.csv 混入两轮数据、抢内存导致被杀。
+    返回文件对象（需保持引用，否则句柄被回收锁就没了）或 None。"""
+    f = open(LOCK, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    f.write(f"{os.getpid()}\n")
+    f.flush()
+    return f
+
+
 async def main():
     results = []
     pairs = date_pairs()
@@ -471,4 +491,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    _lock = acquire_lock()
+    if _lock is None:
+        log("上一轮还在跑，本轮跳过（避免两个进程抢资源、日志交错）")
+        sys.exit(0)
+    try:
+        sys.exit(asyncio.run(main()))
+    finally:
+        _lock.close()
