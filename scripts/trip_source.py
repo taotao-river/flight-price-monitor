@@ -248,9 +248,9 @@ def acceptable(f, window):
     return True
 
 
-async def check_combo(page, out_date, ret_date, log=print):
+async def check_combo(page, route, out_date, ret_date, log=print):
     """返回 (最低含行李方案, 最低且下午抵港方案)，都已含寄舱行李。"""
-    url = SEARCH_URL.format(o=C.TRIP_ORIGIN, d=C.TRIP_DEST,
+    url = SEARCH_URL.format(o=route["trip_origin"], d=route["trip_dest"],
                             dd=out_date, rd=ret_date)
     await page.goto(url, wait_until="domcontentloaded", timeout=70000)
     await page.wait_for_timeout(15000)
@@ -279,15 +279,15 @@ async def check_combo(page, out_date, ret_date, log=print):
         if len(got) >= 20 and len(ok) >= 4:
             break
         if attempt < 2:
-            log(f"  [Trip] {out_date} → {ret_date}: 列表疑似截断"
+            log(f"  [Trip] {route['name']} {out_date} → {ret_date}: 列表疑似截断"
                 f"（{len(got)} 班 / 合格 {len(ok)} 班），重载重试")
 
     if not outs:
-        log(f"  [Trip] {out_date} → {ret_date}: 没抓到航班")
+        log(f"  [Trip] {route['name']} {out_date} → {ret_date}: 没抓到航班")
         return None, None
 
     cands.sort(key=lambda x: x[0].price)
-    log(f"  [Trip] {out_date} → {ret_date}: 去程 {len(outs)} 班，符合条件 {len(cands)} 班")
+    log(f"  [Trip] {route['name']} {out_date} → {ret_date}: 去程 {len(outs)} 班，符合条件 {len(cands)} 班")
     if not cands:
         for f, _ in sorted(outs, key=lambda x: x[0].price)[:12]:
             log(f"      被拒: {money(f.price)} {f.label()} arrive_h={f.arrive_h}")
@@ -364,8 +364,10 @@ async def check_combo(page, out_date, ret_date, log=print):
                 bags, est = bag_cost(f_out, f_ret)
                 total, detail = f_ret.price + bags, ""
 
-            cand = {"source": "Trip.com", "out_date": out_date, "ret_date": ret_date,
-                    "fare": f_ret.price, "bags": bags, "total": total,
+            cand = {"source": "Trip.com", "route": route, "ground": route["ground"],
+                    "out_date": out_date, "ret_date": ret_date,
+                    "fare": f_ret.price, "bags": bags,
+                    "total": total + route["ground"],
                     "bag_estimated": est, "verified": bool(verified),
                     "bag_detail": detail, "out": f_out, "ret": f_ret}
             if best is None or cand["total"] < best["total"]:

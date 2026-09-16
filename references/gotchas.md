@@ -103,3 +103,25 @@ processes appending to the same log — interleaved lines that make timings and 
 unreadable, duplicate rows in the history CSV, and enough memory pressure that one
 instance gets killed mid-run. Take a non-blocking `flock` at startup and exit quietly
 if another pass holds it.
+
+## Data integrity
+
+**A CSV header is written once; the columns are written every run.** Adding a field to
+the row writer without touching the existing file leaves every subsequent row wider than
+the header, and anything parsing by header name silently reads the wrong column. One
+morning's 100 rows were unusable this way — a query for verified fares returned 1 result
+when the truth was 35. Compare the on-disk header against the expected columns on every
+write and roll the file over when they differ.
+
+**Patching source with `sed` or string replacement fails silently when the pattern has
+drifted.** A `route` key was added to one result-builder that way and not to the other,
+because an earlier edit had already changed the surrounding text. The mismatch surfaced
+half an hour later as a `KeyError` at the final write, discarding the whole pass — and
+the ground-transport surcharge it was meant to add had never been applied to the main
+data source at all. Verify the replacement actually landed, and validate result objects
+where they are produced rather than where they are consumed.
+
+**OTAs sell ground transport as flights.** Searching from a secondary airport returns
+itineraries operated by ferry and coach companies that route the traveller back through
+the primary airport before flying — defeating the entire point of using the alternative
+airport. Exclude the home city as a connection point when departing from a nearby one.

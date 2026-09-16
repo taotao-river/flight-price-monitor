@@ -1,18 +1,56 @@
 """监控参数模板。复制成 config.py 再改。
 
-改完存盘即可，下一轮自动生效，不用重启 launchd。
+================== 先把你的要求写在这里 ==================
+
+把出行人的硬性要求用大白话记在本段，改任何配置前先读。下面是示例格式，
+按自己的情况替换。踩过的坑建议也留在这里，它们比配置项本身更容易被忘掉。
+
+行程       出发地 ⇄ 目的地，几天几晚，可接受的日期组合
+           日期是否可动？如果不可动，就别再建议改日期。
+
+预算       含行李来回总价上限。这应当是真实预算。
+           ★ 绝不能把目标价调到高于当前可订价——那样通知只是在复述
+             "现在能买"，监控就失去意义了。
+
+行李       是否需要寄舱行李，几件。注意"只有去程带行李"不算满足要求。
+
+转机       要排除的中转地。排一个地区就要把该地区所有机场都列上
+           （例如台湾：TPE / TSA / KHH / RMQ），只写主机场会漏。
+           从外地机场出发时，还要排除中转回本地机场的行程——
+           OTA 会把"坐船/大巴回本地机场再飞"当成航班卖。
+
+时间       去程最晚几点到目的地、回程最晚几点到家、接不接受跨夜和红眼。
+           注意中文里"下午就可以抵达"通常是上限（最晚下午到），
+           不是"必须下午到"。搞反会差出几百块，不确定就问。
+
+价格真实性 ★ 只报点进下单面板、确认行李符合要求的"已验证"价。
+           ★ 取最低价必须对**过滤后**的集合取，不能对原始列表取。
+
+货币       统一用哪种货币报价，其他币种先换算。
+
+==========================================================
+
 下面的值是一个示例航线（香港→首尔），换航线时逐项核对，
 尤其是 TRIP_DEST / CURRENCY_SYMBOL / TRIP_DOMAIN / BAGGAGE_FEE 这四项。
 """
 
 # ---- 航线 ----
-# Google Flights 用 IATA 机场代码
-ORIGIN = "HKG"
-DEST = "ICN"
-# Trip.com 用它自己的小写城市/机场代码。城市代码（sel = 首尔全部机场）比
-# 单个机场代码覆盖更广。可以先在 hk.trip.com 搜一次，从地址栏的 dcity/acity 抄。
-TRIP_ORIGIN = "hkg"
-TRIP_DEST = "sel"
+# 可以同时盯多个出发机场。哪条先跌到目标价就通知哪条。
+#   origin/dest        Google Flights 用的 IATA 机场代码
+#   trip_origin/dest   Trip.com 自己的小写代码（sel = 首尔全部机场，覆盖 ICN + GMP）
+#   ground             从家到该机场的**来回**地面交通费（本币），会计进总价，
+#                      否则广州 3,200 的票看起来比香港 3,400 便宜，实际并不是。
+#                      下面是粗估值，按你自己的实际走法改。
+ROUTES = [
+    {"name": "香港",   "origin": "HKG", "dest": "ICN",
+     "trip_origin": "hkg", "trip_dest": "sel", "ground": 0},
+    {"name": "澳门",   "origin": "MFM", "dest": "ICN",
+     "trip_origin": "mfm", "trip_dest": "sel", "ground": 340},   # 港澳船票来回
+    {"name": "深圳",   "origin": "SZX", "dest": "ICN",
+     "trip_origin": "szx", "trip_dest": "sel", "ground": 200},   # 高铁/直通巴士来回
+    {"name": "广州",   "origin": "CAN", "dest": "ICN",
+     "trip_origin": "can", "trip_dest": "sel", "ground": 430},   # 高铁来回 + 机场线
+]
 
 # ---- 日期 ----
 # 方式一：显式列出候选日期
@@ -20,7 +58,7 @@ OUTBOUND_DATES = ["2027-04-02", "2027-04-03"]
 RETURN_DATES = ["2027-04-06", "2027-04-07"]
 
 # 方式二：给一个出发日期区间，配合下面的 TRIP_NIGHTS 自动生成所有组合。
-# 例如 ("2027-04-01", "2027-04-12") + TRIP_NIGHTS=4 会生成 4/1→4/5 一直到 4/12→4/16。
+# 例如 ("2027-04-01", "2027-04-12") + TRIP_NIGHTS=4 会生成 10/1→10/5 一直到 10/12→10/16。
 # 设了这个就会忽略上面两个列表。区间越长每轮越慢。
 OUTBOUND_DATE_RANGE = None
 # 只盯固定晚数（回程日 - 去程日）。4 = 五天四晚。
@@ -40,10 +78,16 @@ REQUIRE_SAME_DAY_ARRIVAL = True
 
 # ---- 转机限制 ----
 # Google Flights 把中转标成 IATA 代码（"3 hr 20 min TPE"）
-EXCLUDE_LAYOVER_AIRPORTS = {"TPE", "TSA", "KHH", "RMQ"}
+EXCLUDE_LAYOVER_AIRPORTS = {"TPE", "TSA", "KHH", "RMQ",  # 台湾
+                            "MNL"}  # 马尼拉：10 月台风季，且绕路 7 小时
 # Trip.com 把中转标成城市名（"3h 20m in Taipei"），所以要另列一份
 EXCLUDE_LAYOVER_CITIES = {"taipei", "taiwan", "kaohsiung", "taichung", "taoyuan",
-                          "台北", "台灣", "台湾", "高雄", "桃園", "桃园"}
+                          "台北", "台灣", "台湾", "高雄", "桃園", "桃园",
+                          "manila", "马尼拉", "馬尼拉",
+                          # 从澳门/深圳/广州出发时，Trip.com 会把"坐船/大巴回香港
+                          # 机场再飞"当成航班卖（承运方写着港珠澳快线、珠江船务）。
+                          # 那等于白跑一趟外地机场，一律排除。
+                          "hong kong", "香港"}
 
 # Google 的「Separate tickets」= 把两张单程票拼成一个行程。廉航不跟别家联程，
 # 所以廉航去程的回程几乎全是这种。两程都直飞时没有转机衔接风险，默认允许，
@@ -74,7 +118,7 @@ BAGGAGE_FEE = {
 DEFAULT_BAGGAGE_FEE = 300
 
 # ---- 目标 ----
-TARGET_PRICE = 3300  # 含行李的来回总价（本币）
+TARGET_PRICE = 3500  # 含行李的来回总价（本币）
 
 # ---- 地区与货币 ----
 CURRENCY = "HKD"
@@ -87,9 +131,9 @@ TRIP_LOCALE = "en-HK"
 
 # ---- 抓取深度 ----
 # 每个日期组合点进几个去程候选查回程
-MAX_OUTBOUND_PROBES = 10
+MAX_OUTBOUND_PROBES = 6
 # Trip.com 每个候选之间要重新导航 + 开下单面板验证，慢得多，单独限制
-TRIP_OUTBOUND_PROBES = 8
+TRIP_OUTBOUND_PROBES = 4
 
 HEADLESS = True
 

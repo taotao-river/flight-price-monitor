@@ -1,9 +1,5 @@
 """香港 <-> 首尔 来回低价机票监控。
 
-Copyright (c) 2026 taotao-river
-本程序依 GNU AGPL-3.0 授权发布，随附的 LICENSE 文件为完整条款。
-本程序不附带任何担保。
-
 两个数据源：Trip.com 和 Google Flights。两边都按出发/抵达时间窗、当天抵达、
 排除台湾转机过滤。
 
@@ -189,11 +185,11 @@ def acceptable(f, arrive_window):
     return True
 
 
-async def check_combo(page, out_date, ret_date):
+async def check_combo(page, route, out_date, ret_date):
     """返回该日期组合下、满足全部条件的最便宜来回方案（含行李费）。"""
     url = (
         f"https://www.google.com/travel/flights?hl=en&curr={C.CURRENCY}&gl=HK"
-        f"&q=Flights%20from%20{C.ORIGIN}%20to%20{C.DEST}"
+        f"&q=Flights%20from%20{route['origin']}%20to%20{route['dest']}"
         f"%20on%20{out_date}%20through%20{ret_date}"
     )
     await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -203,14 +199,14 @@ async def check_combo(page, out_date, ret_date):
     try:
         await page.wait_for_selector("ul.Rk10dc li.pIav2d", timeout=30000)
     except Exception:
-        log(f"  {out_date} → {ret_date}: 去程列表未加载")
+        log(f"  {route['name']} {out_date} → {ret_date}: 去程列表未加载")
         return None
 
     await expand_all(page)
     outbounds = await scrape_list(page)
     cands = [(f, li) for f, li in outbounds if acceptable(f, C.OUT_ARRIVE_WINDOW)]
     cands.sort(key=lambda x: x[0].price)
-    log(f"  {out_date} → {ret_date}: 去程 {len(outbounds)} 班，符合条件 {len(cands)} 班")
+    log(f"  {route['name']} {out_date} → {ret_date}: 去程 {len(outbounds)} 班，符合条件 {len(cands)} 班")
     if not cands:
         return None
 
@@ -249,6 +245,7 @@ async def check_combo(page, out_date, ret_date):
             bags = baggage_fee(f_out.airline) + baggage_fee(f_ret.airline)
             total = f_ret.price + bags
             cand = {
+                "route": route, "ground": route["ground"],
                 "out_date": out_date, "ret_date": ret_date,
                 "fare": f_ret.price, "bags": bags, "total": total,
                 "out": f_out, "ret": f_ret,
@@ -314,19 +311,34 @@ def notify(title, message, url=None):
     _osa(f'tell application "System Events" to activate\n{dlg}', wait=False)
 
 
+HISTORY_COLUMNS = ["checked_at", "source", "route", "out_date", "ret_date", "fare_hkd",
+                   "bags_hkd", "ground_hkd", "total_hkd", "verified", "bag_detail",
+                   "out_airline", "out_depart", "out_arrive",
+                   "ret_airline", "ret_depart", "ret_arrive"]
+
+
 def record(results):
+    # 表头只在建档时写一次。加过列之后旧表头会继续沿用，之后每行都比表头宽，
+    # 整份数据按表头解析就是错位的——曾经整个上午 100 行全废。
+    # 所以每次都核对表头，对不上就把旧档归档另起一份。
+    if HISTORY.exists():
+        with open(HISTORY) as f:
+            head = f.readline().strip().split(",")
+        if head != HISTORY_COLUMNS:
+            stamp = f"{datetime.now():%Y%m%d-%H%M%S}"
+            HISTORY.rename(HISTORY.with_name(f"history-{stamp}.csv"))
+            log(f"history.csv 表头与当前字段不符，已归档为 history-{stamp}.csv")
+
     new = not HISTORY.exists()
     with open(HISTORY, "a", newline="") as f:
         w = csv.writer(f)
         if new:
-            w.writerow(["checked_at", "source", "out_date", "ret_date", "fare_hkd",
-                        "bags_hkd", "total_hkd", "verified", "bag_detail",
-                        "out_airline", "out_depart", "out_arrive",
-                        "ret_airline", "ret_depart", "ret_arrive"])
+            w.writerow(HISTORY_COLUMNS)
         ts = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
         for r in results:
-            w.writerow([ts, r.get("source", "?"), r["out_date"], r["ret_date"],
-                        r["fare"], r["bags"], r["total"],
+            w.writerow([ts, r.get("source", "?"), r["route"]["name"],
+                        r["out_date"], r["ret_date"],
+                        r["fare"], r["bags"], r.get("ground", 0), r["total"],
                         bool(r.get("verified")), r.get("bag_detail", ""),
                         r["out"].airline, r["out"].depart, r["out"].arrive,
                         r["ret"].airline, r["ret"].depart, r["ret"].arrive])
@@ -370,16 +382,35 @@ def date_pairs():
 
 
 def booking_url(r):
+    rt = r["route"]
     if r.get("source") == "Trip.com":
         return trip_source.SEARCH_URL.format(
-            o=C.TRIP_ORIGIN, d=C.TRIP_DEST, dd=r["out_date"], rd=r["ret_date"])
+            o=rt["trip_origin"], d=rt["trip_dest"], dd=r["out_date"], rd=r["ret_date"])
     return (f"https://www.google.com/travel/flights?hl=en&curr={C.CURRENCY}&gl=HK"
-            f"&q=Flights%20from%20{C.ORIGIN}%20to%20{C.DEST}"
+            f"&q=Flights%20from%20{rt['origin']}%20to%20{rt['dest']}"
             f"%20on%20{r['out_date']}%20through%20{r['ret_date']}")
 
 
+REQUIRED_KEYS = {"source", "route", "ground", "out_date", "ret_date",
+                 "fare", "bags", "total", "out", "ret"}
+
+
+def validate(r):
+    """结果字典少字段要当场炸，不能等到最后写 CSV 时才发现——
+    抓一轮要半小时，崩在末尾等于整轮白跑。"""
+    missing = REQUIRED_KEYS - r.keys()
+    if missing:
+        raise KeyError(f"{r.get('source', '?')} 的结果缺少字段 {sorted(missing)}")
+    return r
+
+
 def _show(r):
-    bags = f" (票价 {r['fare']:,} + 行李 {r['bags']})" if r["bags"] else ""
+    parts = [f"票价 {r['fare']:,}"]
+    if r["bags"]:
+        parts.append(f"行李 {r['bags']}")
+    if r.get("ground"):
+        parts.append(f"地面交通 {r['ground']}")
+    bags = f" ({' + '.join(parts)})" if len(parts) > 1 else ""
     mark = "[已验证]" if r.get("verified") else "[未验证]"
     detail = f" 行李:{r['bag_detail']}" if r.get("bag_detail") else ""
     return (f"{money(r['total'])}{bags} {mark}{detail}"
@@ -407,7 +438,8 @@ def acquire_lock():
 async def main():
     results = []
     pairs = date_pairs()
-    log(f"监控 {len(pairs)} 个日期组合"
+    log(f"监控 {len(C.ROUTES)} 个出发机场 × {len(pairs)} 个日期组合 = "
+        f"{len(C.ROUTES)*len(pairs)} 组｜机场: {', '.join(r['name'] for r in C.ROUTES)}"
         f"{f'（{C.TRIP_NIGHTS} 晚）' if C.TRIP_NIGHTS is not None else ''}: "
         + ", ".join(f"{o}→{r}" for o, r in pairs))
     async with async_playwright() as p:
@@ -418,16 +450,18 @@ async def main():
         log("=== Trip.com（价格含行李，真实标注）===")
         tctx = await _context(browser, stealth=True)
         tpage = await tctx.new_page()
-        for out_date, ret_date in pairs:
+        for rt in C.ROUTES:
+          for out_date, ret_date in pairs:
             try:
                 best, pref = await trip_source.check_combo(
-                    tpage, out_date, ret_date, log=log)
+                    tpage, rt, out_date, ret_date, log=log)
             except Exception as e:
-                log(f"  [Trip] {out_date} → {ret_date} 出错: {type(e).__name__}: {e}")
+                log(f"  [Trip] {rt['name']} {out_date} → {ret_date} 出错: "
+                    f"{type(e).__name__}: {e}")
                 continue
             if best:
                 best["pref"] = pref
-                results.append(best)
+                results.append(validate(best))
                 log(f"    最低 {_show(best)}")
                 if pref and pref["total"] != best["total"]:
                     log(f"    下午抵港 {_show(pref)}")
@@ -436,15 +470,16 @@ async def main():
         log("=== Google Flights（行李费按航司估算）===")
         gctx = await _context(browser)
         gpage = await gctx.new_page()
-        for out_date, ret_date in pairs:
+        for rt in C.ROUTES:
+          for out_date, ret_date in pairs:
             try:
-                r = await check_combo(gpage, out_date, ret_date)
+                r = await check_combo(gpage, rt, out_date, ret_date)
             except Exception as e:
-                log(f"  {out_date} → {ret_date} 出错: {e}")
+                log(f"  {rt['name']} {out_date} → {ret_date} 出错: {e}")
                 r = None
             if r:
                 r["source"] = "Google"
-                results.append(r)
+                results.append(validate(r))
                 log(f"    最低 {_show(r)}")
                 pr = r.get("pref")
                 if pr and pr["total"] != r["total"]:
@@ -466,7 +501,8 @@ async def main():
     for r in results:
         pr = r.get("pref")
         extra = f"  (下午抵港 {money(pr['total'])})" if pr and pr["total"] != r["total"] else ""
-        log(f"  [{r.get('source','?'):<8}] {r['out_date']} → {r['ret_date']}: "
+        log(f"  [{r.get('source','?'):<8}] {r['route']['name']} "
+            f"{r['out_date']} → {r['ret_date']}: "
             f"{money(r['total'])} {'已验证' if r.get('verified') else '未验证'}{extra}")
 
     # 只有点进下单面板、确认两程都带寄舱行李的价才算数。
@@ -476,7 +512,8 @@ async def main():
     if under:
         hit = min(under, key=lambda r: r["total"])
         aft = C.RET_PREFERRED_ARRIVE[0] <= hit["ret"].arrive_h < C.RET_PREFERRED_ARRIVE[1]
-        msg = (f"{money(hit['total'])} 已验证 | {hit['out_date'][5:]}去 {hit['ret_date'][5:]}回 | "
+        msg = (f"{money(hit['total'])} 已验证 | {hit['route']['name']}出发 | "
+               f"{hit['out_date'][5:]}去 {hit['ret_date'][5:]}回 | "
                f"{hit['out'].airline} {hit['out'].depart} 出发 | "
                f"{hit['ret'].airline} {hit['ret'].arrive} 抵港{'（下午）' if aft else ''} | "
                f"行李 {hit.get('bag_detail') or '两程各一件'}")
